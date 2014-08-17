@@ -1,0 +1,81 @@
+﻿using System;
+using System.Configuration;
+using System.Threading;
+using System.Threading.Tasks;
+using Amazon;
+using Amazon.SQS;
+using Amazon.SQS.Model;
+using JustEat.EventStore;
+using log4net;
+using log4net.Config;
+using Newtonsoft.Json.Linq;
+
+namespace JustEat.EventStoreClient
+{
+    public class EventStoreAuditService
+    {
+        private string _eventStoreQueueUrl;
+        private readonly AutoResetEvent StopRequest = new AutoResetEvent(false);
+        private readonly IEventStoreHttpConnection _eventStore;
+        private readonly ILog _log = LogManager.GetLogger(typeof (EventStoreAuditService));
+        private readonly TopicSubscriberService _subscriberService;
+        private readonly AmazonSQSClient sqsClient;
+        private Thread Worker;
+
+        public EventStoreAuditService(TopicSubscriberService subscriberService)
+        {
+            _subscriberService = subscriberService;
+            _eventStore = EventStoreHttpConnection.Create(ConnectionSettings.Default, "http://10.212.101.125:2113");
+            XmlConfigurator.Configure();
+            sqsClient = new AmazonSQSClient(RegionEndpoint.EUWest1);
+            _eventStoreQueueUrl = ConfigurationManager.AppSettings["EventStoreQueueUrl"];
+        }
+
+
+        public void Start()
+        {
+            _log.Info("EventStoreAuditService is Started");
+
+            Worker = new Thread(RunClient);
+            Worker.Start();
+        }
+
+
+        private Task void RunClient(object arg)
+        {
+            while (true)
+            {
+                if (!StopRequest.WaitOne(TimeSpan.Parse(ConfigurationManager.AppSettings["TimeSpanPolling"].ToString())))
+                {
+                    _subscriberService.SubscribeToAllTopics();
+                }
+                var rmr = new ReceiveMessageRequest {QueueUrl = _eventStoreQueueUrl, MaxNumberOfMessages = 10,};
+                var response = sqsClient.ReceiveMessage(rmr);
+
+                foreach (var message in response.ReceiveMessageResult.Messages)
+                {
+                    dynamic token = JObject.Parse(message.Body);
+                    await SaveToEventStore(token);
+                    sqsClient.DeleteMessage(new DeleteMessageRequest() { QueueUrl = _eventStoreQueueUrl, ReceiptHandle = message.ReceiptHandle });
+                }
+            }
+        }
+
+
+        public void Stop()
+        {
+            _log.Info("EventStoreAuditService is Stopped");
+            StopRequest.Set();
+            Worker.Join();
+        }
+
+
+        private async Task SaveToEventStore(dynamic token)
+        {
+            var messageDetails = JObject.Parse(token.Message.ToString());
+            NewEventData @event = NewEventData.Create(messageDetails);
+
+            await _eventStore.AppendToStreamAsync(token.Subject.ToString(), ExpectedVersion.Any, @event);
+        }
+    }
+}
