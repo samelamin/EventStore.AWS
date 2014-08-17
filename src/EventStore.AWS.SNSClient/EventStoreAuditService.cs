@@ -34,11 +34,11 @@ namespace EventStore.AWS.SNSClient
                 Interval = settings.TimeSpanPolling.TotalMilliseconds
             };
 
-            _timer.Elapsed += SubscriptionTimeoutElapsed;
+            _timer.Elapsed += TopicSubscriptionTimeoutElapsed;
             _timer.Start();
         }
 
-        private void SubscriptionTimeoutElapsed(object sender, ElapsedEventArgs e)
+        private void TopicSubscriptionTimeoutElapsed(object sender, ElapsedEventArgs e)
         {
             _timer.Stop();
             _subscriberService.SubscribeToAllTopics();
